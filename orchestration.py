@@ -3,10 +3,12 @@ import subprocess
 import shutil
 import datetime
 from pathlib import Path
+from time import sleep
 import stable_whisper
 from enum import IntEnum
 import json
 import os
+import yt_dlp
 
 INSTRUMENT = "instrumental.wav"
 LYRICS = "lyrics.ass"
@@ -15,24 +17,36 @@ VIDEO = "video_only.mp4"
 VOCALS = "vocals.wav"
 RAW = "raw.wav"
 METADATA = "metadata.json"
+OUTPUT = "output.mkv"
 
 root_dir = Path("./data")
 
 class ProcessorState(IntEnum):
     INIT = auto()
+    METADATA_FETCHED = auto()
     DOWNLOADED = auto()
     SPLITTED = auto()
     DEMUCSD = auto()
     TRANSCRIBED = auto()
+    BAKED = auto()
 
 class YtSongProcessor:
     def __init__(self, yt_token):
+        self.title = ""
+        self.artist = ""
         if not yt_token:
             raise ValueError("yt_token is required")
         
         self.path = root_dir / yt_token
         if self.path.exists() and (self.path / METADATA).exists():
-            self.load()
+            try:
+                self.load()
+            except json.JSONDecodeError:
+                print(f"[ERROR] Corrupted metadata file for {yt_token}, re-fetching...")
+                os.remove(self.path / METADATA)
+                self.state = ProcessorState.INIT
+                self.yt_token = yt_token
+                self.dump()
         else:
             self.path.mkdir(parents=True, exist_ok=True)
             self.state = ProcessorState.INIT
@@ -42,9 +56,11 @@ class YtSongProcessor:
         print(f"[INFO] Processor initialized for {yt_token} at {self.path}, state: {self.state}")
     
     def run(self):
-        while self.state < ProcessorState.TRANSCRIBED:
+        while self.state < ProcessorState.BAKED:
             match self.state:
                 case ProcessorState.INIT:
+                    self.fetch_metadata()
+                case ProcessorState.METADATA_FETCHED:
                     self.download()
                 case ProcessorState.DOWNLOADED:
                     self.split()
@@ -53,8 +69,25 @@ class YtSongProcessor:
                 case ProcessorState.DEMUCSD:
                     self.transcribe()
                 case ProcessorState.TRANSCRIBED:
+                    self.bake()
+                case ProcessorState.BAKED:
+                    print(f"[INFO] Song {self.yt_token} already baked, finished.")
                     return
             self.dump()
+        sleep(5)
+
+    def fetch_metadata(self):
+        if self.state >= ProcessorState.METADATA_FETCHED:
+            print(f"[INFO] Song {self.yt_token} already fetched metadata, skip")
+            return
+        
+        youtube_url = "https://www.youtube.com/watch?v=" + self.yt_token
+        print(f"[INFO] Fetching metadata for {youtube_url} to {self.path / METADATA}")
+        metadata_dict = get_video_metadata(youtube_url)
+        self.title = metadata_dict["title"]
+        self.artist = metadata_dict["artist"]
+        self.state = ProcessorState.METADATA_FETCHED
+        print(f"[INFO] Fetched metadata for {self.yt_token} to {self.path / METADATA}")
 
     def download(self):
         if self.state >= ProcessorState.DOWNLOADED:
@@ -65,14 +98,16 @@ class YtSongProcessor:
             print(f"[WARNING] Song {self.yt_token} already downloaded, probably dirty, cleaning...")
             os.remove(path)
         
-        print(f"[INFO] Downloading {self.yt_token} to {path}")
-        run_command([
+        youtube_url = "https://www.youtube.com/watch?v=" + self.yt_token
+        print(f"[INFO] Downloading {youtube_url} to {path}")
+        if not run_command([
             "yt-dlp",
             "--force-overwrites",
             "-f", "mp4",
             "-o", str(path),
-            "https://www.youtube.com/watch?v=" + self.yt_token
-        ])
+            youtube_url,
+        ]):
+            raise RuntimeError(f"yt-dlp failed for {self.yt_token}")
         self.state = ProcessorState.DOWNLOADED
         print(f"[INFO] Downloaded {self.yt_token} to {path}")
     
@@ -96,8 +131,10 @@ class YtSongProcessor:
 
         print(f"[INFO] Splitting {self.yt_token} to {self.path}")
 
-        run_command(["ffmpeg", "-y", "-i", str(path), "-an", "-vcodec", "copy", str(video_path)])
-        run_command(["ffmpeg", "-y", "-i", str(path), "-vn", "-acodec", "pcm_s16le", "-ar", "44100", str(original_path)])
+        if not run_command(["ffmpeg", "-y", "-i", str(path), "-an", "-vcodec", "copy", str(video_path)]):
+            raise RuntimeError(f"FFmpeg failed for {self.yt_token}")
+        if not run_command(["ffmpeg", "-y", "-i", str(path), "-vn", "-acodec", "pcm_s16le", "-ar", "44100", str(original_path)]):
+            raise RuntimeError(f"FFmpeg failed for {self.yt_token}")
 
         self.state = ProcessorState.SPLITTED
         print(f"[INFO] Splitted {self.yt_token} to {self.path}")
@@ -159,24 +196,80 @@ class YtSongProcessor:
         self.state = ProcessorState.TRANSCRIBED
         print(f"[INFO] Transcribed {self.yt_token} to {self.path}")
 
+    def bake(self):
+        if self.state >= ProcessorState.BAKED:
+            print(f"[INFO] Song {self.yt_token} already baked, skip")
+            return
+        video_path = self.path / VIDEO
+        if not video_path.exists():
+            print(f"[ERROR] Song {self.yt_token} not splitted, skip")
+            return
+        instrumental_path = self.path / INSTRUMENT
+        if not instrumental_path.exists():
+            print(f"[ERROR] Song {self.yt_token} not demucs'd, skip")
+            return
+        vocals_path = self.path / VOCALS
+        if not vocals_path.exists():
+            print(f"[ERROR] Song {self.yt_token} not demucs'd, skip")
+            return
+        ass_path = self.path / LYRICS
+        if not ass_path.exists():
+            print(f"[ERROR] Song {self.yt_token} not transcribed, skip")
+            return
+        
+        output_path = self.path / OUTPUT
+        if output_path.exists():
+            print(f"[WARNING] Song {self.yt_token} already baked, probably dirty, cleaning...")
+            os.remove(output_path)
+        print(f"[INFO] Baking {self.yt_token} to {self.path}")
+        
+        ffmpeg_cmd = [
+            "ffmpeg",
+            "-i", str(video_path),
+            "-i", str(instrumental_path),
+            "-i", str(vocals_path),
+            "-i", str(ass_path),
+            "-map", "0:v",
+            "-map", "1:a",
+            "-map", "2:a",
+            "-map", "3:s",
+            "-c:v", "copy",
+            "-c:a", "aac", "-b:a", "320k",
+            "-c:s", "copy",
+            "-metadata:s:a:0", "title=伴奏",
+            "-metadata:s:a:1", "title=原唱",
+            "-disposition:a:0", "default",
+            str(output_path),
+        ]
+        if run_command(ffmpeg_cmd):
+            self.state = ProcessorState.BAKED
+            print(f"[INFO] Baked {self.yt_token} to {self.path}")
+        else:
+            raise RuntimeError(f"FFmpeg failed for {self.yt_token}")
+
+
     def dump(self):
-        with open(self.path / METADATA, "w") as f:
+        with open(self.path / METADATA, "w", encoding='utf-8') as f:
             dict = {
                 "yt_token": self.yt_token,
                 "state": self.state.value,
                 "path": str(self.path),
+                "title": self.title,
+                "artist": self.artist,
             }
-            json.dump(dict, f, indent=4)
+            json.dump(dict, f, indent=4, ensure_ascii=False)
 
     def load(self):
         metadata_path = self.path / METADATA
         if not metadata_path.exists():
             self.dump()
-        with open(self.path / METADATA, "r") as f:
+        with open(self.path / METADATA, "r", encoding='utf-8') as f:
             dict = json.load(f)
             self.yt_token = dict["yt_token"]
             self.state = ProcessorState(dict["state"])
             self.path = Path(dict["path"])
+            self.title = dict["title"]
+            self.artist = dict["artist"]
 
 def run_command(cmd, shell=False):
     """Utility to run external commands and log output."""
@@ -309,8 +402,52 @@ def generate_karaoke_ass(whisper_result, output_path, max_chars_per_line=16):
         f.write("\n".join(lines))
     print(f"[INFO] Wrapped ASS file saved to: {output_path}")
 
+def get_video_metadata(url):
+    ydl_opts = {
+        'quiet': True,
+        'no_warnings': True,
+        'extract_flat': False, # 确保获取完整层级信息
+    }
+
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        try:
+            # download=False 仅提取元数据
+            info = ydl.extract_info(url, download=False)
+            
+            # 1. 尝试获取 YouTube Music 的官方字段 (最精准)
+            title = info.get('track') 
+            artist = info.get('artist')
+
+            # 2. 如果官方字段为空，尝试从视频标题中解析
+            # 很多歌曲标题格式为 "Artist - Title" 或 "Title - Artist"
+            if not title:
+                full_title = info.get('title', 'Unknown_Title')
+                if " - " in full_title:
+                    parts = full_title.split(" - ", 1)
+                    # 这里假设格式是 Artist - Title，你可以根据需要调换
+                    artist = parts[0].strip()
+                    title = parts[1].strip()
+                else:
+                    title = full_title
+                    artist = info.get('uploader', 'Unknown_Artist')
+
+            # 3. 数据清理：移除文件名非法字符（对你保存文件很有用）
+            title = "".join([c for c in title if c.isalpha() or c.isdigit() or c in ' .-_']).strip()
+            artist = "".join([c for c in artist if c.isalpha() or c.isdigit() or c in ' .-_']).strip()
+
+            return {
+                "title": title,
+                "artist": artist,
+                "duration": info.get('duration'),
+                "thumbnail": info.get('thumbnail'),
+                "id": info.get('id')
+            }
+        except Exception as e:
+            print(f"获取元数据失败: {e}")
+            return None
+
 if __name__ == "__main__":
-    yt_token = "BKld0fxCu9k"
+    yt_token = "8in5nJz-Fek"
     processor = YtSongProcessor(yt_token)
     processor.run()
     
