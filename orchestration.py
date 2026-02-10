@@ -34,6 +34,8 @@ class YtSongProcessor:
     def __init__(self, yt_token):
         self.title = ""
         self.artist = ""
+        self.device = "cuda" if os.environ.get("DEVICE") == "cuda" else "cpu"
+        print(f"[INFO] Using device: {self.device}")
         if not yt_token:
             raise ValueError("yt_token is required")
         
@@ -164,7 +166,7 @@ class YtSongProcessor:
         tmp_dir.mkdir(parents=True, exist_ok=True)
         
         print(f"[INFO] Demucs'ing {self.yt_token} to {self.path}")
-        demucs_cmd = ["demucs", "--two-stems", "vocals", "-o", str(tmp_dir), "--device", "cpu", str(original_path)]
+        demucs_cmd = ["demucs", "--two-stems", "vocals", "-o", str(tmp_dir), "--device", self.device, str(original_path)]
         if run_command(demucs_cmd):
             # Move files to work_dir root
             sep_path = tmp_dir / "htdemucs" / "original"
@@ -191,7 +193,7 @@ class YtSongProcessor:
             os.remove(ass_path)
 
         print(f"[INFO] Transcribing {self.yt_token} to {self.path}")
-        step4_transcribe_stable_ts(vocals_path, ass_path, "cpu")
+        step4_transcribe_stable_ts(vocals_path, ass_path, self.device)
 
         self.state = ProcessorState.TRANSCRIBED
         print(f"[INFO] Transcribed {self.yt_token} to {self.path}")
@@ -217,7 +219,8 @@ class YtSongProcessor:
             print(f"[ERROR] Song {self.yt_token} not transcribed, skip")
             return
         
-        output_path = self.path / OUTPUT
+        output_filename = f"{self.title}.mkv"
+        output_path = self.path / output_filename
         if output_path.exists():
             print(f"[WARNING] Song {self.yt_token} already baked, probably dirty, cleaning...")
             os.remove(output_path)
@@ -236,8 +239,8 @@ class YtSongProcessor:
             "-c:v", "copy",
             "-c:a", "aac", "-b:a", "320k",
             "-c:s", "copy",
-            "-metadata:s:a:0", "title=伴奏",
-            "-metadata:s:a:1", "title=原唱",
+            "-metadata:s:a:0", "title=instrumental",
+            "-metadata:s:a:1", "title=vocal",
             "-disposition:a:0", "default",
             str(output_path),
         ]
@@ -295,6 +298,10 @@ def step4_transcribe_stable_ts(audio_path, output_ass_path, device):
     # 我们把 result 转成 dict，直接喂给我写的那个 generate_karaoke_ass 函数。
     # stable-ts 的 result.to_dict() 结构和 WhisperX/OpenAI 是一模一样的。
     data = result.to_dict()
+
+    tmp_whisper_file = output_ass_path.parent / "tmp_whisper.json"
+    with open(tmp_whisper_file, "w", encoding='utf-8') as f:
+        json.dump(data, f, indent=4, ensure_ascii=False)
     
     # 4. 生成专业 KTV 字幕
     # 这里调用的是你脚本里定义的那个函数
@@ -447,7 +454,7 @@ def get_video_metadata(url):
             return None
 
 if __name__ == "__main__":
-    yt_token = "8in5nJz-Fek"
+    yt_token = "OGjXZro9-vM"
     processor = YtSongProcessor(yt_token)
     processor.run()
     
