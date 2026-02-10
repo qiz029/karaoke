@@ -424,36 +424,61 @@ def get_video_metadata(url):
     ydl_opts = {
         'quiet': True,
         'no_warnings': True,
-        'extract_flat': False, # 确保获取完整层级信息
+        'extract_flat': False,
     }
-    if os.getenv("COOKIE_LOCATION") is not None:
-        ydl_opts['cookiefile'] = os.getenv("COOKIE_LOCATION") / "Cookies"
+
+    # --- 修复 1：正确的路径拼接 ---
+    cookie_env = os.getenv("COOKIE_LOCATION")
+    if cookie_env:
+        # 假设 COOKIE_LOCATION 是文件夹路径，拼接文件名
+        cookie_path = Path(cookie_env) / "Cookies" # 或者是 "cookies.txt"
+        if cookie_path.exists():
+            ydl_opts['cookiefile'] = str(cookie_path)
+        else:
+            print(f"Warning: Cookie file not found at {cookie_path}")
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         try:
-            # download=False 仅提取元数据
             info = ydl.extract_info(url, download=False)
             
-            # 1. 尝试获取 YouTube Music 的官方字段 (最精准)
+            # --- 修复 2：确保变量都有默认值 ---
+            # 优先获取官方元数据，默认为 None
             title = info.get('track') 
             artist = info.get('artist')
 
-            # 2. 如果官方字段为空，尝试从视频标题中解析
-            # 很多歌曲标题格式为 "Artist - Title" 或 "Title - Artist"
+            # 如果没有官方标题，则尝试解析视频标题
             if not title:
                 full_title = info.get('title', 'Unknown_Title')
+                
+                # 常见格式解析：Artist - Title 或 Title - Artist
+                # 这里是个难点，通常欧美是 Artist - Title，但最好有个兜底
                 if " - " in full_title:
                     parts = full_title.split(" - ", 1)
-                    # 这里假设格式是 Artist - Title，你可以根据需要调换
-                    artist = parts[0].strip()
-                    title = parts[1].strip()
+                    # 假设格式: Artist - Title
+                    temp_artist = parts[0].strip()
+                    temp_title = parts[1].strip()
+                    
+                    title = temp_title
+                    # 只有当官方 artist 也没拿到时，才用解析出来的 artist
+                    if not artist:
+                        artist = temp_artist
                 else:
                     title = full_title
-                    artist = info.get('uploader', 'Unknown_Artist')
+            
+            # 兜底：如果折腾半天 artist 还是空的，就用上传者名字
+            if not artist:
+                artist = info.get('uploader', 'Unknown_Artist')
 
-            # 3. 数据清理：移除文件名非法字符（对你保存文件很有用）
-            title = "".join([c for c in title if c.isalpha() or c.isdigit() or c in ' .-_']).strip()
-            artist = "".join([c for c in artist if c.isalpha() or c.isdigit() or c in ' .-_']).strip()
+            # --- 修复 3：更温和的文件名清洗（保留括号等，只去除非法字符） ---
+            # 如果你是为了存文件，建议替换掉 / \ : * ? " < > | 
+            # 如果你是为了展示，其实不用清洗那么干净
+            def sanitize(text):
+                if not text: return "Unknown"
+                # 将非法文件字符替换为下划线，但保留中文、括号、空格等
+                return re.sub(r'[\\/*?:"<>|]', '_', str(text)).strip()
+
+            title = sanitize(title)
+            artist = sanitize(artist)
 
             return {
                 "title": title,
@@ -465,7 +490,7 @@ def get_video_metadata(url):
         except Exception as e:
             print(f"获取元数据失败: {e}")
             return None
-
+            
 if __name__ == "__main__":
     yt_token = "OGjXZro9-vM"
     processor = YtSongProcessor(yt_token)
