@@ -102,13 +102,24 @@ class YtSongProcessor:
         
         youtube_url = "https://www.youtube.com/watch?v=" + self.yt_token
         print(f"[INFO] Downloading {youtube_url} to {path}")
-        if not run_command([
+        yt_dlp_cmd = [
             "yt-dlp",
             "--force-overwrites",
             "-f", "mp4",
             "-o", str(path),
             youtube_url,
-        ]):
+        ]
+        if os.getenv("COOKIE_LOCATION") is not None:
+            yt_dlp_cmd = [
+                "yt-dlp",
+                "--cookies", os.getenv("COOKIE_LOCATION") / "Cookies",
+                "--force-overwrites",
+                "-f", "mp4",
+                "-o", str(path),
+                youtube_url,
+            ]
+           
+        if not run_command(yt_dlp_cmd):
             raise RuntimeError(f"yt-dlp failed for {self.yt_token}")
         self.state = ProcessorState.DOWNLOADED
         print(f"[INFO] Downloaded {self.yt_token} to {path}")
@@ -415,6 +426,8 @@ def get_video_metadata(url):
         'no_warnings': True,
         'extract_flat': False, # 确保获取完整层级信息
     }
+    if os.getenv("COOKIE_LOCATION") is not None:
+        ydl_opts['cookiefile'] = os.getenv("COOKIE_LOCATION") / "Cookies"
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         try:
