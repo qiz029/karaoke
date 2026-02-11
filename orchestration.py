@@ -109,15 +109,6 @@ class YtSongProcessor:
             "-o", str(path),
             youtube_url,
         ]
-        if os.getenv("COOKIE_LOCATION") is not None:
-            yt_dlp_cmd = [
-                "yt-dlp",
-                "--cookies", os.getenv("COOKIE_LOCATION") / "Cookies",
-                "--force-overwrites",
-                "-f", "mp4",
-                "-o", str(path),
-                youtube_url,
-            ]
            
         if not run_command(yt_dlp_cmd):
             raise RuntimeError(f"yt-dlp failed for {self.yt_token}")
@@ -427,23 +418,14 @@ def get_video_metadata(url):
         'extract_flat': False,
     }
 
-    # --- 修复 1：正确的路径拼接 ---
-    cookie_env = os.getenv("COOKIE_LOCATION")
-    if cookie_env:
-        # 假设 COOKIE_LOCATION 是文件夹路径，拼接文件名
-        cookie_path = Path(cookie_env) / "Cookies" # 或者是 "cookies.txt"
-        if cookie_path.exists():
-            ydl_opts['cookiefile'] = str(cookie_path)
-        else:
-            print(f"Warning: Cookie file not found at {cookie_path}")
-
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         try:
             info = ydl.extract_info(url, download=False)
+            print(info.keys())
             
             # --- 修复 2：确保变量都有默认值 ---
             # 优先获取官方元数据，默认为 None
-            title = info.get('track') 
+            title = info.get('title') 
             artist = info.get('artist')
 
             # 如果没有官方标题，则尝试解析视频标题
@@ -469,30 +451,10 @@ def get_video_metadata(url):
             if not artist:
                 artist = info.get('uploader', 'Unknown_Artist')
 
-            # --- 修复 3：更温和的文件名清洗（保留括号等，只去除非法字符） ---
-            # 如果你是为了存文件，建议替换掉 / \ : * ? " < > | 
-            # 如果你是为了展示，其实不用清洗那么干净
-            def sanitize(text):
-                if not text: return "Unknown"
-                # 将非法文件字符替换为下划线，但保留中文、括号、空格等
-                return re.sub(r'[\\/*?:"<>|]', '_', str(text)).strip()
-
-            title = sanitize(title)
-            artist = sanitize(artist)
-
             return {
                 "title": title,
                 "artist": artist,
-                "duration": info.get('duration'),
-                "thumbnail": info.get('thumbnail'),
-                "id": info.get('id')
             }
         except Exception as e:
             print(f"获取元数据失败: {e}")
             return None
-            
-if __name__ == "__main__":
-    yt_token = "OGjXZro9-vM"
-    processor = YtSongProcessor(yt_token)
-    processor.run()
-    

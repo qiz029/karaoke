@@ -20,10 +20,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # 建议将依赖写在 requirements.txt 中，这里为了方便直接安装
 RUN pip install --no-cache-dir -U demucs stable-ts yt-dlp yt_dlp
 
+RUN pip install fastapi[standard] uvicorn asyncio
+
 RUN pip install torch==2.5.1 torchaudio==2.5.1 soundfile
 
 # 拷贝代码
 COPY orchestration.py .
+COPY main.py .
+
+EXPOSE 8080
 
 # 执行
-CMD ["python", "orchestration.py"]
+CMD ["python", "main.py"]
