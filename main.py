@@ -2,6 +2,9 @@ from fastapi import FastAPI
 import uvicorn
 from orchestration import YtSongProcessor
 import asyncio
+import modal_app
+from typing import Annotated
+from fastapi import FastAPI, Header
 
 app = FastAPI()
 
@@ -18,17 +21,37 @@ def get_song_process_status(yt_token: str):
     }
 
 @app.post(f"/song_process/{{yt_token}}/start")
-async def start_song_process(yt_token: str):
-    processor = YtSongProcessor(yt_token)
+async def start_song_process(yt_token: str, 
+    device: Annotated[str | None, Header()] = None):
+    if device is None:
+        device = "cpu"
+    print(f"[INFO] No device specified, using {device}")
+    processor = YtSongProcessor(yt_token, device=device)
     asyncio.create_task(asyncio.to_thread(processor.run))
     return {
         "yt_token": yt_token,
         "status": processor.state,
     }
 
-@app.post(f"/song_process/{{yt_token}}/step/{{step}}")
-def start_song_process(yt_token: str, step: str):
+@app.post(f"/song_process/{{yt_token}}/clean")
+def clean_song_process(yt_token: str):
     processor = YtSongProcessor(yt_token)
+    processor.clean()
+    return {
+        "yt_token": yt_token,
+        "status": processor.state,
+    }
+
+@app.post(f"/song_process/{{yt_token}}/step/{{step}}")
+def start_song_process(
+    yt_token: str,
+    step: str,
+    device: Annotated[str | None, Header()] = None,
+):
+    if device is None:
+        device = "cpu"
+    print(f"[INFO] No device specified, using {device}")
+    processor = YtSongProcessor(yt_token, device=device)
     match step:
         case "download":
             processor.download()
