@@ -29,12 +29,12 @@ def correct_lyrics_with_gemini(api_key: str, raw_text: str, song_metadata: str) 
     client = genai.Client(api_key=api_key)
     
     prompt = f"""
-    你是一个专业的字幕校对员。
+    你是一个专业的字幕校对员，充分利用你的搜索功能，找到这首歌曲的官方正确歌词。
     
     任务：
     1. 我会给你一段由 AI 语音识别生成的粗糙歌词（可能包含错别字、同音词错误）。
     2. 歌曲信息是：【{song_metadata}】。
-    3. 请利用你的知识库或搜索能力，找到这首歌的**官方正确歌词**。
+    3. 请利用你的搜索能力，找到这首歌的**官方正确歌词**。
     4. 对比我提供的粗糙文本，输出修正后的、分行正确的**纯歌词**。
     5. **严禁**输出任何时间轴、解释、前言或后缀。只输出歌词内容。
     6. 保持原曲的段落结构。
@@ -382,6 +382,7 @@ def transcribe(title: str, artist: str, audio_path: str):
         str(input_path), 
         text, 
         language="zh",
+        interpolate=True,
         original_split=True  # 保留 Gemini 的分行
     )
     
@@ -393,6 +394,7 @@ def transcribe(title: str, artist: str, audio_path: str):
         result,  
         precision=0.05  # 精度设为 50ms，对 KTV 字幕来说足够平滑且准确
     )
+    result.regroup(regroup_strategy='ms_we_sp', max_chars=20)
     
     # 5. 导出并生成专业 KTV 字幕
     data = result.to_dict()
@@ -436,6 +438,7 @@ def transcribe_direct(title: str, artist: str, audio_path: str):
     result = model.transcribe(
         str(input_path),
         language="zh",
+        initial_prompt="这是一段纯净的歌词录音，不包含任何字幕组信息或片头广告。",
         regroup=True,
         word_timestamps=True,  # 【关键】确保强行提取字级时间戳
         vad=True,          
@@ -455,6 +458,11 @@ def transcribe_direct(title: str, artist: str, audio_path: str):
         str(input_path),
         result,          # 直接把 transcribe 生成的结构完美的 result 传进来
         precision=0.05   # 50ms 精度
+    )
+    result.regroup(
+        regroup_strategy='ms_we_sp', 
+        max_chars=20,       # 根据你的视频宽度调整，一般 20 个汉字左右比较合适
+        max_gap=1.5         # 唱词停顿超过 1.5 秒就换行，避免字幕在屏幕上停留太久
     )
     
     # === 3. 导出并生成专业 KTV 字幕 ===

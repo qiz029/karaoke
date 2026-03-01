@@ -253,7 +253,7 @@ class YtSongProcessor:
             remote_audio = self.yt_token + "/" + VOCALS
             remote_ass = self.yt_token + "/" + LYRICS
             if not modal_app_check_file_exists(remote_ass):
-                modal_app_transcribe(self.title, self.artist, remote_audio)
+                modal_app_transcribe_direct(self.title, self.artist, remote_audio)
             if not modal_app.download_if_not_exist(remote_ass, ass_path):
                 raise RuntimeError(f"Failed to download {remote_ass} to {ass_path}")
         else:
@@ -601,6 +601,10 @@ def modal_app_demucs_v3(remote_path: str) -> bool:
     return fn.remote(remote_path)
 
 def modal_app_transcribe(title: str, artist: str, remote_path: str) -> bool:
+    fn = modal.Function.from_name("ktv-processor", "transcribe")
+    return fn.remote(title, artist, remote_path)
+
+def modal_app_transcribe_direct(title: str, artist: str, remote_path: str) -> bool:
     fn = modal.Function.from_name("ktv-processor", "transcribe_direct")
     return fn.remote(title, artist, remote_path)
 
