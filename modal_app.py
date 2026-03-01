@@ -38,6 +38,15 @@ def correct_lyrics_with_gemini(api_key: str, raw_text: str, song_metadata: str) 
     4. 对比我提供的粗糙文本，输出修正后的、分行正确的**纯歌词**。
     5. **严禁**输出任何时间轴、解释、前言或后缀。只输出歌词内容。
     6. 保持原曲的段落结构。
+
+    严格指令：
+    绝对不要增减任何一行！保持原有的行数和结构完全一致。
+
+    绝对不要删除重复的句子！歌手唱了几遍就保留几遍。
+
+    绝对不要添加任何诸如 [副歌]、[间奏] 之类的标签。
+
+    你的唯一任务是：只修改同音错别字，让句子通顺。其他一概不准动！"
     
     粗糙歌词输入：
     {raw_text}
@@ -50,7 +59,7 @@ def correct_lyrics_with_gemini(api_key: str, raw_text: str, song_metadata: str) 
     
     try:
         response = client.models.generate_content(
-            model="gemini-3-pro-preview", # 推荐用 Flash，速度快且搜索能力强
+            model="gemini-3-flash-preview", # 推荐用 Flash，速度快且搜索能力强
             contents=prompt,
             config=types.GenerateContentConfig(
                 tools=tools,
@@ -329,73 +338,133 @@ def process_audio_for_ktv(remote_filename: str):
     timeout=600
 )
 def transcribe(title: str, artist: str, audio_path: str):
-    
     import stable_whisper
+    import os
+    import json
+    from pathlib import Path
+    
     device = 'cuda'
-    print(f"[STEP 4] Transcribing using Stable-TS on {device}...")
+    print(f"[STEP 1] Transcribing using Stable-TS on {device}...")
     input_path = Path("/data") / audio_path
     output_dir = input_path.parent
     output_ass_path = output_dir / "lyrics.ass"
 
+    # L4 显卡跑 float16 非常快
     model = stable_whisper.load_faster_whisper(
-        "large-v3-turbo",  # 或者 "large-v3-turbo"
+        "large-v3-turbo", 
         device="cuda",
-        compute_type="float16" # L4 上用 float16 加速
+        compute_type="float16" 
     )
 
-    # 2. 获取正确文本
+    # 1. 初始转录（提取时间轴和初始文本）
     result = model.transcribe(
         str(input_path),
         language="zh",
         regroup=True,
-        vad=True,          # 【关键】开启 VAD 过滤间奏
+        vad=True,          
         vad_parameters={
-            "threshold": 0.5,               # 之前建议的 0.5
-            "min_speech_duration_ms": 300,  # 0.3秒 -> 300毫秒
-            "min_silence_duration_ms": 500, # 0.5秒 -> 500毫秒 (可选，用于断句)
-            # "speech_pad_ms": 400          # 可选：前后多留一点声音，防止切词太狠
+            "threshold": 0.5,               
+            "min_speech_duration_ms": 300,  
+            "min_silence_duration_ms": 500, 
         },
     )
+    
+    # 2. 调用大模型修正文本
     gemini_key = os.environ["GEMINI_KEY"]
     text = correct_lyrics_with_gemini(gemini_key, result.text, f"{title} - {artist}")
 
     print("📝 修正后的歌词预览:")
     print(text[:100] + "...")
 
-    # === 3. 修正后的 Align (去掉报错参数) ===
-    # align 的作用只是把纯文本粗略地映射回音频，不需要太复杂的参数
+    # === 3. Align (将修正后的文本强制对齐到音频) ===
+    print("[STEP 3] Aligning text to audio...")
     result = model.align(
         str(input_path), 
         text, 
         language="zh",
-        original_split=True, # 保留 Gemini 的分行
-        # 如果你用了 VAD，align 内部也会尝试利用，但不要手动传 skip_non_speech
+        original_split=True  # 保留 Gemini 的分行
     )
     
-    # === 4. 关键步骤: Refine (这才是解决“抢跑”的核心) ===
-    # refine 会重新扫描音频波形，把对齐后的单词边界“吸附”到最近的真实发音上
-    # 这步能解决 90% 的“歌词提前显示”问题
-    print("[STEP 3.5] Refining timestamps...")
-    model.refine(
+    # === 4. 关键步骤: Refine (修复赋值 Bug) ===
+    print("[STEP 4] Refining timestamps...")
+    # 【修复】必须把返回值重新赋给 result
+    result = model.refine(
         str(input_path),
-        result,  # 把刚才 align 得到的结果传进去
-        precision=0.05,
-        # 这里的参数是给 VAD 或者 demucs 用的，如果不用 demucs 可以不传
+        result,  
+        precision=0.05  # 精度设为 50ms，对 KTV 字幕来说足够平滑且准确
     )
     
-    # 3. 关键转换！
-    # 我们不调用 result.to_ass()，因为它的样式太丑且逻辑不符合 KTV。
-    # 我们把 result 转成 dict，直接喂给我写的那个 generate_karaoke_ass 函数。
-    # stable-ts 的 result.to_dict() 结构和 WhisperX/OpenAI 是一模一样的。
+    # 5. 导出并生成专业 KTV 字幕
     data = result.to_dict()
 
     tmp_whisper_file = output_ass_path.parent / "tmp_whisper.json"
     with open(tmp_whisper_file, "w", encoding='utf-8') as f:
         json.dump(data, f, indent=4, ensure_ascii=False)
     
-    # 4. 生成专业 KTV 字幕
-    # 这里调用的是你脚本里定义的那个函数
-    # generate_karaoke_ass(data, output_ass_path)
+    # 调用你的字幕生成函数
+    generate_karaoke_ass_v2(data, output_ass_path)
+    
+    print(f"[INFO] Saved Customized KTV ASS to {output_ass_path}")
+
+@app.function(
+    image=image,
+    gpu="L4",
+    volumes={"/data": volume},
+    secrets=[modal.Secret.from_name("app-secret")],
+    timeout=600
+)
+def transcribe_direct(title: str, artist: str, audio_path: str):
+    import stable_whisper
+    import json
+    from pathlib import Path
+    
+    device = 'cuda'
+    print(f"[STEP 1] Loading Stable-TS on {device}...")
+    input_path = Path("/data") / audio_path
+    output_dir = input_path.parent
+    output_ass_path = output_dir / "lyrics.ass"
+
+    # L4 显卡跑 float16 非常快
+    model = stable_whisper.load_faster_whisper(
+        "large-v3-turbo", 
+        device="cuda",
+        compute_type="float16" 
+    )
+
+    # === 1. 直接提取带字级时间轴的原始文本 ===
+    print("[STEP 2] Transcribing and generating native word-level timestamps...")
+    result = model.transcribe(
+        str(input_path),
+        language="zh",
+        regroup=True,
+        word_timestamps=True,  # 【关键】确保强行提取字级时间戳
+        vad=True,          
+        vad_parameters={
+            "threshold": 0.5,               
+            "min_speech_duration_ms": 300,  
+            "min_silence_duration_ms": 500, 
+        },
+    )
+    
+    # ⚠️ 【已经删除】Gemini 修正文本的步骤
+    # ⚠️ 【已经删除】model.align 重新对齐的步骤
+
+    # === 2. 关键步骤: Refine (巩固原始时间轴) ===
+    print("[STEP 3] Refining timestamps...")
+    result = model.refine(
+        str(input_path),
+        result,          # 直接把 transcribe 生成的结构完美的 result 传进来
+        precision=0.05   # 50ms 精度
+    )
+    
+    # === 3. 导出并生成专业 KTV 字幕 ===
+    data = result.to_dict()
+
+    tmp_whisper_file = output_ass_path.parent / "tmp_whisper.json"
+    with open(tmp_whisper_file, "w", encoding='utf-8') as f:
+        json.dump(data, f, indent=4, ensure_ascii=False)
+    
+    # 调用你的字幕生成函数
     generate_karaoke_ass_v2(data, output_ass_path)
     
     print(f"[INFO] Saved Customized KTV ASS to {output_ass_path}")

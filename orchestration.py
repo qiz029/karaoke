@@ -601,7 +601,7 @@ def modal_app_demucs_v3(remote_path: str) -> bool:
     return fn.remote(remote_path)
 
 def modal_app_transcribe(title: str, artist: str, remote_path: str) -> bool:
-    fn = modal.Function.from_name("ktv-processor", "transcribe")
+    fn = modal.Function.from_name("ktv-processor", "transcribe_direct")
     return fn.remote(title, artist, remote_path)
 
 def modal_app_clean(remote_path: str) -> bool:
